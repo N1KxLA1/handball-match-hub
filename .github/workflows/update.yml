@@ -1,0 +1,79 @@
+name: Match-Hub aktualisieren
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # alle 15 Minuten (GitHub startet manchmal ein paar Minuten später)
+  workflow_dispatch:          # "Run workflow"-Knopf für einen Lauf von Hand
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pillow installieren (für die EHF-Fotos)
+        run: pip install --quiet pillow
+
+      - name: Datum für den Bilder-Cache
+        id: day
+        run: echo "d=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # Fotos und Logos ändern sich selten: einmal pro Tag neu laden, sonst aus dem Cache
+      - name: Bilder-Cache laden
+        id: img
+        uses: actions/cache@v4
+        with:
+          path: img
+          key: img-${{ steps.day.outputs.d }}
+          restore-keys: img-
+
+      - name: Spiele, Tabellen und Statistiken holen
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          python3 fetch_hub.py _site/data
+
+      - name: Fotos und Logos neu laden (einmal pro Tag)
+        if: steps.img.outputs.cache-hit != 'true'
+        run: |
+          python3 fetch_hub.py _site/data --portraits-only
+          python3 fetch_hub.py _site/data --ehf-portraits-only
+          python3 fetch_hub.py _site/data --logos-only
+          rm -rf img && mkdir -p img
+          cp -r _site/data/pt _site/data/pt_index.json _site/data/logos.json img/
+
+      - name: Fotos und Logos aus dem Cache übernehmen
+        if: steps.img.outputs.cache-hit == 'true'
+        run: cp -r img/pt img/pt_index.json img/logos.json _site/data/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
